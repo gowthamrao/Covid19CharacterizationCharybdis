@@ -7,7 +7,7 @@ runStudy <- function(connectionDetails = NULL,
                      cohortStagingTable = "cohort_stg",
                      cohortTable = "cohort",
                      featureSummaryTable = "cohort_smry",
-                     cohortIds = NULL,
+                     cohortIdsToExclude = c(),
                      cohortGroups = getUserSelectableCohortGroups(),
                      exportFolder,
                      databaseId,
@@ -27,10 +27,11 @@ runStudy <- function(connectionDetails = NULL,
   ParallelLogger::addDefaultFileLogger(file.path(exportFolder, "Covid19CharacterizationCharybdis.txt"))
   on.exit(ParallelLogger::unregisterLogger("DEFAULT"))
   
-  if (as.logical(Sys.getenv("USE_SUBSET")) == TRUE) {
-    warning("Running in subset mode for testing")
+  useSubset = Sys.getenv("USE_SUBSET")
+  if (!is.na(as.logical(useSubset)) && as.logical(useSubset)) {
+    ParallelLogger::logWarn("Running in subset mode for testing")
   }
-  
+
   if (incremental) {
     if (is.null(incrementalFolder)) {
       stop("Must specify incrementalFolder when incremental = TRUE")
@@ -52,6 +53,8 @@ runStudy <- function(connectionDetails = NULL,
   
   # Instantiate cohorts -----------------------------------------------------------------------
   cohorts <- getCohortsToCreate()
+  # Remove any cohorts that are to be excluded
+  cohorts <- cohorts[!(cohorts$cohortId %in% cohortIdsToExclude), ]
   targetCohortIds <- cohorts[cohorts$cohortType %in% cohortGroups$cohortGroup, "cohortId"][[1]]
   strataCohortIds <- cohorts[cohorts$cohortType == "strata", "cohortId"][[1]]
   featureCohortIds <- cohorts[cohorts$cohortType == "feature", "cohortId"][[1]]
@@ -197,6 +200,7 @@ runStudy <- function(connectionDetails = NULL,
   if (nrow(featureProportions) > 0) {
     featureProportions$databaseId <- databaseId
     featureProportions <- enforceMinCellValue(featureProportions, "featureCount", minCellCount)
+    featureProportions <- featureProportions[featureProportions$totalCount >= getMinimumSubjectCountForCharacterization(), ]
   }
   features <- formatCovariates(featureProportions)
   writeToCsv(features, file.path(exportFolder, "covariate.csv"), incremental = incremental, covariateId = features$covariateId)
@@ -228,7 +232,7 @@ runStudy <- function(connectionDetails = NULL,
 
   # Subset the cohorts to the target/strata for running feature extraction
   # that are >= 140 per protocol to improve efficency
-  featureExtractionCohorts <-  loadCohortsForExportWithChecksumFromPackage(counts[counts$cohortSubjects >= 140, c("cohortId")]$cohortId)
+  featureExtractionCohorts <-  loadCohortsForExportWithChecksumFromPackage(counts[counts$cohortSubjects >= getMinimumSubjectCountForCharacterization(), c("cohortId")]$cohortId)
   # Bulk approach ----------------------
   if (useBulkCharacterization) {
     ParallelLogger::logInfo("********************************************************************************************")
@@ -304,6 +308,12 @@ runStudy <- function(connectionDetails = NULL,
                                 signif(delta, 3),
                                 attr(delta, "units")))
   
+}
+
+# Per protocol, we will only characterize cohorts with
+# >= 140 subjects to improve efficency
+getMinimumSubjectCountForCharacterization <- function() {
+  return(140)
 }
 
 getVocabularyInfo <- function(connection, cdmDatabaseSchema, oracleTempSchema) {
